@@ -124,7 +124,8 @@ use events::DispatchMessageInner;
 pub mod id;
 
 pub use events::{
-    AxisScroll, DispatchMessage, Ime, LayerShellEvent, ReturnData, XdgInfoChangedType,
+    ActivationTokenId, AxisScroll, DispatchMessage, Ime, LayerShellEvent, ReturnData,
+    XdgInfoChangedType,
 };
 
 use strtoshape::str_to_shape;
@@ -172,6 +173,11 @@ use wayland_protocols::xdg::shell::client::{
     xdg_surface::{self, XdgSurface},
     xdg_toplevel::{self, XdgToplevel},
     xdg_wm_base::{self, XdgWmBase},
+};
+
+use wayland_protocols::xdg::activation::v1::client::{
+    xdg_activation_token_v1::{self, XdgActivationTokenV1},
+    xdg_activation_v1::XdgActivationV1,
 };
 
 use wayland_protocols::{
@@ -925,7 +931,9 @@ pub struct WindowState<T> {
     cursor_manager: Option<WpCursorShapeManagerV1>,
     viewporter: Option<WpViewporter>,
     fractional_scale_manager: Option<WpFractionalScaleManagerV1>,
+    xdg_activation: Option<XdgActivationV1>,
     globals: Option<GlobalList>,
+    qh: Option<QueueHandle<WindowState<T>>>,
 
     // background
     background_surface: Option<WlSurface>,
@@ -965,6 +973,7 @@ pub struct WindowState<T> {
     finger_locations: HashMap<i32, (f64, f64)>,
     enter_serial: Option<u32>,
     button_serial: Option<u32>,
+    last_input_serial: Option<u32>,
 
     xdg_info_cache: Vec<(wl_output::WlOutput, ZxdgOutputInfo)>,
 
@@ -1467,7 +1476,9 @@ impl<T> Default for WindowState<T> {
             viewporter: None,
             xdg_output_manager: None,
             globals: None,
+            qh: None,
             fractional_scale_manager: None,
+            xdg_activation: None,
             virtual_keyboard: None,
 
             registry_state: None,
@@ -1498,6 +1509,7 @@ impl<T> Default for WindowState<T> {
             finger_locations: HashMap::new(),
             enter_serial: None,
             button_serial: None,
+            last_input_serial: None,
             // NOTE: if is some, means it is to be binded, but not now it
             // is not binded
             xdg_info_cache: Vec::new(),
@@ -2108,6 +2120,87 @@ delegate_noop!(@<T> WindowState<T>: ignore ZwpVirtualKeyboardManagerV1);
 delegate_noop!(@<T> WindowState<T>: ignore ZxdgOutputManagerV1);
 delegate_noop!(@<T> WindowState<T>: ignore WpFractionalScaleManagerV1);
 delegate_noop!(@<T> WindowState<T>: ignore XdgPositioner);
+delegate_noop!(@<T> WindowState<T>: ignore XdgActivationV1); // the manager only takes requests
+
+impl<T> Dispatch<XdgActivationTokenV1, (Option<id::Id>, ActivationTokenId)> for WindowState<T> {
+    fn event(
+        state: &mut Self,
+        proxy: &XdgActivationTokenV1,
+        event: <XdgActivationTokenV1 as Proxy>::Event,
+        data: &(Option<id::Id>, ActivationTokenId),
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        if let xdg_activation_token_v1::Event::Done { token } = event {
+            state.message.push((
+                data.0,
+                DispatchMessageInner::ActivationTokenDone {
+                    request: data.1,
+                    token,
+                },
+            ));
+            proxy.destroy();
+        }
+    }
+}
+
+impl<T: 'static> WindowState<T> {
+    /// Request an xdg-activation token from the compositor
+    /// (`xdg_activation_v1.get_activation_token`). The token arrives
+    /// asynchronously as [DispatchMessage::ActivationTokenDone] together with
+    /// the returned [ActivationTokenId]. Pass it to a newly spawned client in
+    /// the `XDG_ACTIVATION_TOKEN` environment variable so the compositor can
+    /// hand it focus (the launcher / notification-daemon use case), or use it
+    /// with [WindowState::activate_with_token].
+    ///
+    /// `surface_id` is the surface the request is made on behalf of and
+    /// `app_id` the application id of the client that will be activated; both
+    /// are optional. The serial of the most recent keyboard/pointer/touch
+    /// input is attached automatically when there is one; note that
+    /// compositors commonly treat tokens without a serial as urgency-only and
+    /// will not move focus for them.
+    ///
+    /// Returns `None` when the compositor does not support
+    /// `xdg_activation_v1`.
+    pub fn request_activation_token(
+        &self,
+        surface_id: Option<id::Id>,
+        app_id: Option<String>,
+    ) -> Option<ActivationTokenId> {
+        let activation = self.xdg_activation.as_ref()?;
+        let qh = self.qh.as_ref()?;
+        let request = ActivationTokenId::unique();
+        let token = activation.get_activation_token(qh, (surface_id, request));
+        if let (Some(serial), Some(seat)) = (
+            self.last_input_serial.or(self.enter_serial),
+            self.seat_back.as_ref(),
+        ) {
+            token.set_serial(serial, seat);
+        }
+        if let Some(app_id) = app_id {
+            token.set_app_id(app_id);
+        }
+        if let Some(unit) = surface_id.and_then(|id| self.get_unit_with_id(id)) {
+            token.set_surface(&unit.wl_surface);
+        }
+        token.commit();
+        Some(request)
+    }
+
+    /// Activate (raise and focus) one of this client's surfaces with an
+    /// activation token received from outside, normally through the
+    /// `XDG_ACTIVATION_TOKEN` environment variable
+    /// (`xdg_activation_v1.activate`).
+    ///
+    /// Returns `None` when the compositor does not support
+    /// `xdg_activation_v1` or the surface does not exist.
+    pub fn activate_with_token(&self, surface_id: id::Id, token: String) -> Option<()> {
+        let activation = self.xdg_activation.as_ref()?;
+        let unit = self.get_unit_with_id(surface_id)?;
+        activation.activate(token, &unit.wl_surface);
+        Some(())
+    }
+}
 sctk::delegate_registry!(@<T: 'static> WindowState<T>);
 sctk::delegate_output!(@<T: 'static> WindowState<T>);
 
@@ -2190,6 +2283,8 @@ impl<T: 'static> WindowState<T> {
             .ok();
 
         self.text_input_manager = text_input_manager;
+        self.xdg_activation = globals.bind::<XdgActivationV1, _, _>(&qh, 1..=1, ()).ok();
+        self.qh = Some(qh.clone());
         event_queue.blocking_dispatch(&mut self)?; // then make a dispatch
 
         // do the step before, you get empty list

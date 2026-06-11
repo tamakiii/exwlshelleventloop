@@ -136,13 +136,22 @@ async fn get_connection() -> zbus::Result<zbus::Connection> {
     }
 }
 
-pub async fn launch(id: &str, cmd: &[String], description: &str) -> anyhow::Result<()> {
+pub async fn launch(
+    id: &str,
+    cmd: &[String],
+    description: &str,
+    activation_token: Option<String>,
+) -> anyhow::Result<()> {
     let conn = get_connection().await?;
     let systemd = Systemd1ManagerProxy::builder(&conn)
         .destination("org.freedesktop.systemd1")?
         .build()
         .await?;
     let service = format!("layershell-launcher-tmp.{id}@{}.service", Id::unique().0);
+
+    // pass the xdg-activation token along so the compositor hands the
+    // spawned client focus
+    let token_env = activation_token.map(|token| format!("XDG_ACTIVATION_TOKEN={token}"));
 
     systemd
         .start_transient_unit(
@@ -155,7 +164,10 @@ pub async fn launch(id: &str, cmd: &[String], description: &str) -> anyhow::Resu
                     args: cmd.to_owned(),
                     unclean: false,
                 }],
-                environment: vec![],
+                environment: token_env
+                    .as_deref()
+                    .map(|env| vec![env])
+                    .unwrap_or_default(),
                 working_directory: None,
             },
             vec![],

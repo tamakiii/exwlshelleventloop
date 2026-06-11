@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased] - 2026-06-07
+### Added
+- Feat: xdg-activation (`xdg_activation_v1`) support. layershellev binds the global when available and exposes `WindowState::request_activation_token()` (token delivered as `DispatchMessage::ActivationTokenDone`, with the serial of the most recent keyboard/pointer/touch input attached) and `WindowState::activate_with_token()`. iced_layershell exposes the matching `LayerShellCustomAction::ActivationTokenRequest` with an `ActivationTokenSender` reply channel, and `to_layer_message` generates an `ActivationTokenRequest` variant plus a `request_activation_token` helper for both single and multi mode. This lets launchers and notification daemons pass `XDG_ACTIVATION_TOKEN` to spawned clients so the compositor hands them focus; the `application_launcher` example does this now.
 ### Changed (breaking)
 - Feat: `IcedNewPopupSettings`/`NewPopUpSettings` take explicit parent surface plus full xdg_positioner controls (`anchor_rect`, `anchor`, `gravity`, `constraint_adjustment`) instead of a single `position`.
 - Popups now positioned by the compositor relative to their parent surface, auto-flip/slide near screen edges, can be nested, and are dismissed via an xdg_popup grab. 

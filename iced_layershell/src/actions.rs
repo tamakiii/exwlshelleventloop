@@ -8,7 +8,8 @@ use layershellev::{
     NewInputPanelSettings, NewLayerShellSettings, NewXdgWindowSettings, PopupPlacement,
 };
 
-use std::sync::Arc;
+use futures::channel::oneshot;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub struct IcedXdgWindowSettings {
@@ -125,6 +126,36 @@ impl ActionCallback {
     }
 }
 
+/// One-shot reply channel of
+/// [LayerShellCustomAction::ActivationTokenRequest]. Wrapped in an
+/// `Arc<Mutex<..>>` so the action enum stays `Clone` (like
+/// [ActionCallback]); only the first completion is delivered.
+#[derive(Clone)]
+pub struct ActivationTokenSender(Arc<Mutex<Option<oneshot::Sender<Option<String>>>>>);
+
+impl std::fmt::Debug for ActivationTokenSender {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "activation token sender")
+    }
+}
+
+impl ActivationTokenSender {
+    /// Create the reply channel: hand the sender to
+    /// [LayerShellCustomAction::ActivationTokenRequest] and await the
+    /// receiver for the token. The receiver resolves to `None` when the
+    /// compositor does not support `xdg_activation_v1`.
+    pub fn channel() -> (Self, oneshot::Receiver<Option<String>>) {
+        let (sender, receiver) = oneshot::channel();
+        (Self(Arc::new(Mutex::new(Some(sender)))), receiver)
+    }
+
+    pub(crate) fn send(&self, token: Option<String>) {
+        if let Some(sender) = self.0.lock().ok().and_then(|mut guard| guard.take()) {
+            let _ = sender.send(token);
+        }
+    }
+}
+
 /// NOTE: DO NOT USE THIS ENUM DIERCTLY
 /// use macro to_layer_message
 #[derive(Debug, Clone)]
@@ -164,6 +195,16 @@ pub enum LayerShellCustomAction {
     /// is same with WindowAction::Close(id)
     RemoveWindow,
     ForgetLastOutput,
+    /// Request an xdg-activation token for the surface of this window, to
+    /// pass to a newly spawned client through the `XDG_ACTIVATION_TOKEN`
+    /// environment variable so the compositor hands it focus (the launcher /
+    /// notification-daemon use case). The token is delivered through the
+    /// [ActivationTokenSender] reply channel.
+    ActivationTokenRequest {
+        /// the application id of the client that will be activated, optional
+        app_id: Option<String>,
+        sender: ActivationTokenSender,
+    },
 }
 
 /// Please do not use this struct directly

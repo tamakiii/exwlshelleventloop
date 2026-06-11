@@ -1,7 +1,7 @@
 use crate::reexport::{PopupAnchor, PopupConstraintAdjustment};
 use crate::{
     DefaultStyle,
-    actions::{IcedNewPopupSettings, LayerShellCustomActionWithId},
+    actions::{ActivationTokenSender, IcedNewPopupSettings, LayerShellCustomActionWithId},
     ime_preedit::ImeState,
     multi_window::window_manager::WindowManager,
     settings::VirtualKeyboardSettings,
@@ -30,8 +30,8 @@ use iced_program::Program as IcedProgram;
 use iced_runtime::Action;
 use iced_runtime::user_interface;
 use layershellev::{
-    DisplayWrapper, LayerShellEvent, NewPopUpSettings, PopupPlacement, RefreshRequest, ReturnData,
-    WindowState, WindowWrapper,
+    ActivationTokenId, DisplayWrapper, LayerShellEvent, NewPopUpSettings, PopupPlacement,
+    RefreshRequest, ReturnData, WindowState, WindowWrapper,
     id::Id as LayerShellId,
     reexport::{
         wayland_client::{WlCompositor, WlRegion},
@@ -282,6 +282,7 @@ where
     wl_input_region: Option<WlRegion>,
     user_interfaces: UserInterfaces<P>,
     waiting_layer_shell_actions: Vec<(Option<IcedId>, LayerShellCustomAction)>,
+    pending_activation_tokens: HashMap<ActivationTokenId, ActivationTokenSender>,
     iced_events: Vec<(IcedId, IcedEvent)>,
     messages: Vec<P::Message>,
     proxy: IcedProxy<Action<P::Message>>,
@@ -316,6 +317,7 @@ where
             wl_input_region: Default::default(),
             user_interfaces: UserInterfaces::new(application),
             waiting_layer_shell_actions: Default::default(),
+            pending_activation_tokens: HashMap::new(),
             iced_events: Default::default(),
             messages: Default::default(),
             proxy,
@@ -390,6 +392,14 @@ where
             }
             IcedLayerShellEvent::Window(LayerShellWindowEvent::Closed) => {
                 self.handle_closed_event(ev, layer_shell_id)
+            }
+            IcedLayerShellEvent::Window(LayerShellWindowEvent::ActivationTokenDone {
+                request,
+                token,
+            }) => {
+                if let Some(sender) = self.pending_activation_tokens.remove(&request) {
+                    sender.send(Some(token));
+                }
             }
             IcedLayerShellEvent::Window(window_event) => {
                 self.handle_window_event(layer_shell_id, window_event)
@@ -893,6 +903,17 @@ where
             }
             LayerShellCustomAction::ForgetLastOutput => {
                 ev.forget_last_output();
+            }
+            LayerShellCustomAction::ActivationTokenRequest { app_id, sender } => {
+                let layer_shell_id =
+                    layer_shell_id.or_else(|| self.window_manager.first().map(|window| window.id));
+                match ev.request_activation_token(layer_shell_id, app_id) {
+                    Some(request) => {
+                        self.pending_activation_tokens.insert(request, sender);
+                    }
+                    // the compositor does not support xdg_activation_v1
+                    None => sender.send(None),
+                }
             }
         }
     }

@@ -288,8 +288,12 @@ impl<T> Dispatch<wl_keyboard::WlKeyboard, ()> for WindowState<T> {
             wl_keyboard::Event::Key {
                 state: keystate,
                 key,
+                serial,
                 ..
             } => {
+                if matches!(keystate, WEnum::Value(KeyState::Pressed)) {
+                    state.last_input_serial = Some(serial);
+                }
                 let pressed_state = match keystate {
                     WEnum::Value(KeyState::Pressed) => ElementState::Pressed,
                     WEnum::Value(KeyState::Released) => ElementState::Released,
@@ -442,6 +446,7 @@ impl<T> Dispatch<wl_touch::WlTouch, ()> for WindowState<T> {
                 y,
             } => {
                 state.finger_locations.insert(id, (x, y));
+                state.last_input_serial = Some(serial);
                 let surface_id = state.get_id_from_surface(&surface);
                 state
                     .active_surfaces
@@ -678,6 +683,7 @@ impl<T> Dispatch<wl_pointer::WlPointer, ()> for WindowState<T> {
             } => {
                 if matches!(btnstate, WEnum::Value(wl_pointer::ButtonState::Pressed)) {
                     state.button_serial = Some(serial);
+                    state.last_input_serial = Some(serial);
                 }
                 let mouse_surface = mouse_surface.cloned();
                 state.update_current_surface(mouse_surface);
