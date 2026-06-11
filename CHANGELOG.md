@@ -6,7 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased] - 2026-06-07
+### Added
+- Feat: sessionlockev handles the `ext_session_lock_v1` `locked`/`finished` events instead of ignoring them: they are delivered as `DispatchMessage::Locked`/`DispatchMessage::Finished`, `WindowState::is_locked()`/`lock_finished()` expose the lock state, an unlock requested before `locked` is deferred until the compositor answers the lock request (avoiding the `invalid_unlock` protocol error), and after `finished` the lock object is destroyed the way the protocol requires (`destroy` vs `unlock_and_destroy`) before the event loop stops.
+- Feat: iced_sessionlock delivers `locked` to the application as a message through the new `FromLockedInfo` trait (the `to_session_message` macro now also generates a `Locked` variant), and reports `finished` by returning the new `Error::LockFinished` from `run()`.
 ### Changed (breaking)
+- iced_sessionlock applications must implement `FromLockedInfo` for their message type (automatic when using `to_session_message`).
 - Feat: `IcedNewPopupSettings`/`NewPopUpSettings` take explicit parent surface plus full xdg_positioner controls (`anchor_rect`, `anchor`, `gravity`, `constraint_adjustment`) instead of a single `position`.
 - Popups now positioned by the compositor relative to their parent surface, auto-flip/slide near screen edges, can be nested, and are dismissed via an xdg_popup grab. 
 ### Removed (breaking)

@@ -10,4 +10,6 @@ fn test_macro() {
     }
     let e = TestEnum::UnLock;
     let _ = e.clone();
+    let locked = <TestEnum as iced_sessionlock::FromLockedInfo>::get(iced_sessionlock::LockedInfo);
+    assert!(matches!(locked, TestEnum::Locked));
 }

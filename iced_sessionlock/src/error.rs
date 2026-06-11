@@ -18,6 +18,12 @@ pub enum Error {
 
     #[error("Error during dispatch")]
     WaylandDispatchFailed(#[from] SessionLockEventError),
+
+    /// The compositor denied or revoked the session lock
+    /// (`ext_session_lock_v1.finished`), for example because another lock
+    /// screen is already running.
+    #[error("the compositor denied or revoked the session lock")]
+    LockFinished,
 }
 
 impl From<iced_graphics::Error> for Error {

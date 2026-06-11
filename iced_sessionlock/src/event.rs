@@ -95,6 +95,11 @@ pub enum WindowEvent {
     },
     Refresh,
     Closed,
+    /// the compositor has activated the lock (`ext_session_lock_v1.locked`)
+    Locked,
+    /// the compositor denied or revoked the lock
+    /// (`ext_session_lock_v1.finished`)
+    Finished,
     ThemeChanged(iced_core::theme::Mode),
 }
 
@@ -110,6 +115,8 @@ impl From<&DispatchMessage> for WindowEvent {
         match value {
             DispatchMessage::RequestRefresh { .. } => WindowEvent::Refresh,
             DispatchMessage::Closed => WindowEvent::Closed,
+            DispatchMessage::Locked => WindowEvent::Locked,
+            DispatchMessage::Finished => WindowEvent::Finished,
             DispatchMessage::MouseEnter {
                 surface_x: x,
                 surface_y: y,

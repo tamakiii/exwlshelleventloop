@@ -12,6 +12,7 @@ mod pattern {
     use iced_runtime::Task;
 
     use crate::actions::UnLockAction;
+    use crate::{FromLockedInfo, LockedInfo};
 
     use crate::DefaultStyle;
 
@@ -19,7 +20,7 @@ mod pattern {
     use iced_debug as debug;
     use iced_exdevtools::gen_attach;
     use iced_program::Program;
-    gen_attach! { Action = UnLockAction }
+    gen_attach! { Action = UnLockAction, GetTrait = FromLockedInfo, NewShellInfo = LockedInfo }
 
     /// The update logic of some [`Application`].
     ///
@@ -154,7 +155,11 @@ mod pattern {
     ) -> Application<impl Program<Message = Message, Theme = Theme, State = State>>
     where
         State: 'static,
-        Message: 'static + TryInto<UnLockAction, Error = Message> + Send + std::fmt::Debug,
+        Message: 'static
+            + TryInto<UnLockAction, Error = Message>
+            + FromLockedInfo
+            + Send
+            + std::fmt::Debug,
         Theme: DefaultStyle,
         Renderer: iced_program::Renderer,
     {
@@ -613,8 +618,11 @@ mod pattern {
         pub fn run(self) -> Result
         where
             Self: 'static,
-            P::Message:
-                std::fmt::Debug + Send + 'static + TryInto<UnLockAction, Error = P::Message>,
+            P::Message: std::fmt::Debug
+                + Send
+                + 'static
+                + TryInto<UnLockAction, Error = P::Message>
+                + FromLockedInfo,
         {
             #[cfg(all(feature = "debug", not(target_arch = "wasm32")))]
             let program = {

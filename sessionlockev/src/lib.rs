@@ -141,7 +141,7 @@ use wayland_client::{
 use wayland_protocols::ext::session_lock::v1::client::{
     ext_session_lock_manager_v1::ExtSessionLockManagerV1,
     ext_session_lock_surface_v1::{self, ExtSessionLockSurfaceV1},
-    ext_session_lock_v1::ExtSessionLockV1,
+    ext_session_lock_v1::{self, ExtSessionLockV1},
 };
 use wayland_protocols::wp::viewporter::client::{
     wp_viewport::WpViewport, wp_viewporter::WpViewporter,
@@ -569,6 +569,11 @@ pub struct WindowState<T> {
     enter_serial: Option<u32>,
 
     return_data: Vec<ReturnData>,
+
+    // lock lifecycle, see ext_session_lock_v1.locked/finished
+    is_locked: bool,
+    lock_finished: bool,
+    pending_unlock: bool,
 }
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -687,6 +692,10 @@ impl<T> Default for WindowState<T> {
             enter_serial: None,
 
             return_data: Vec::new(),
+
+            is_locked: false,
+            lock_finished: false,
+            pending_unlock: false,
         }
     }
 }
@@ -720,6 +729,20 @@ impl<T> WindowState<T> {
             .iter()
             .find(|unit| Some(&unit.wl_surface) == self.current_surface.as_ref())
             .map(|unit| unit.id())
+    }
+
+    /// Whether the compositor has activated the lock, meaning the
+    /// `ext_session_lock_v1.locked` event has been received. Before this the
+    /// lock surfaces are not shown and the session must not be treated as
+    /// locked.
+    pub fn is_locked(&self) -> bool {
+        self.is_locked
+    }
+
+    /// Whether the compositor denied or revoked the lock, meaning the
+    /// `ext_session_lock_v1.finished` event has been received.
+    pub fn lock_finished(&self) -> bool {
+        self.lock_finished
     }
 
     /// use display_handle to render surface, not to create buffer yourself
@@ -940,8 +963,30 @@ delegate_noop!(@<T>WindowState<T>: ignore WlShmPool); // so it is pool, created 
 delegate_noop!(@<T>WindowState<T>: ignore WlBuffer); // buffer show the picture
 //
 
-delegate_noop!(@<T>WindowState<T>: ignore ExtSessionLockV1); // buffer show the picture
-delegate_noop!(@<T>WindowState<T>: ignore ExtSessionLockManagerV1); // buffer show the picture
+impl<T> Dispatch<ExtSessionLockV1, ()> for WindowState<T> {
+    fn event(
+        state: &mut Self,
+        _proxy: &ExtSessionLockV1,
+        event: <ExtSessionLockV1 as Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        match event {
+            ext_session_lock_v1::Event::Locked => {
+                state.is_locked = true;
+                state.message.push((None, DispatchMessageInner::Locked));
+            }
+            ext_session_lock_v1::Event::Finished => {
+                state.lock_finished = true;
+                state.message.push((None, DispatchMessageInner::Finished));
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
+delegate_noop!(@<T>WindowState<T>: ignore ExtSessionLockManagerV1); // the manager only takes requests
 
 delegate_noop!(@<T>WindowState<T>: ignore WpCursorShapeManagerV1);
 delegate_noop!(@<T>WindowState<T>: ignore WpCursorShapeDeviceV1);
@@ -1187,6 +1232,48 @@ impl<T: 'static> WindowState<T> {
                             configured: false,
                         });
                     }
+                    (_, DispatchMessageInner::Locked) => {
+                        let return_data = event_handler(
+                            SessionLockEvent::RequestMessages(&DispatchMessage::Locked),
+                            window_state,
+                            None,
+                        );
+                        // An unlock requested before `locked` arrived has been
+                        // deferred, because unlock_and_destroy before `locked`
+                        // is the invalid_unlock protocol error. Perform it now.
+                        if window_state.pending_unlock
+                            || matches!(return_data, ReturnData::RequestUnlockAndExist)
+                        {
+                            lock.unlock_and_destroy();
+                            connection
+                                .roundtrip()
+                                .expect("should roundtrip successfully");
+                            signal.stop();
+                            return true;
+                        }
+                    }
+                    (_, DispatchMessageInner::Finished) => {
+                        event_handler(
+                            SessionLockEvent::RequestMessages(&DispatchMessage::Finished),
+                            window_state,
+                            None,
+                        );
+                        // The compositor denied the lock (for example another
+                        // lock client is running) or revoked it. After
+                        // `finished` the protocol requires the client to
+                        // destroy the object: with destroy if `locked` was
+                        // never received, with unlock_and_destroy otherwise.
+                        if window_state.is_locked {
+                            lock.unlock_and_destroy();
+                        } else {
+                            lock.destroy();
+                        }
+                        connection
+                            .roundtrip()
+                            .expect("should roundtrip successfully");
+                        signal.stop();
+                        return true;
+                    }
                     _ => {
                         let (index_message, msg) = msg;
                         let msg: DispatchMessage = msg.clone().into();
@@ -1196,6 +1283,14 @@ impl<T: 'static> WindowState<T> {
                             *index_message,
                         ) {
                             ReturnData::RequestUnlockAndExist => {
+                                // unlock_and_destroy before `locked` is the
+                                // invalid_unlock protocol error: defer the
+                                // unlock until the compositor answers the lock
+                                // request with `locked` or `finished`.
+                                if !window_state.is_locked {
+                                    window_state.pending_unlock = true;
+                                    continue;
+                                }
                                 lock.unlock_and_destroy();
                                 connection
                                     .roundtrip()
@@ -1227,6 +1322,13 @@ impl<T: 'static> WindowState<T> {
                 for data in return_data {
                     match data {
                         ReturnData::RequestUnlockAndExist => {
+                            // same as above: defer the unlock until `locked`
+                            // arrived, to avoid the invalid_unlock protocol
+                            // error.
+                            if !window_state.is_locked {
+                                window_state.pending_unlock = true;
+                                continue;
+                            }
                             lock.unlock_and_destroy();
                             connection.roundtrip().expect("should go final roundtrip");
                             signal.stop();
