@@ -56,6 +56,11 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                 NewInputPanel { settings: iced_layershell::reexport::NewInputPanelSettings, id: iced_layershell::reexport::IcedId },
                 RemoveWindow(iced_layershell::reexport::IcedId),
                 ForgetLastOutput,
+                /// Request an xdg-activation token for the surface of window `id`,
+                /// to pass to a spawned client through `XDG_ACTIVATION_TOKEN`.
+                /// Prefer the generated `request_activation_token` helper, which
+                /// also wires up the reply channel.
+                ActivationTokenRequest { id: iced_layershell::reexport::IcedId, app_id: Option<String>, sender: iced_layershell::actions::ActivationTokenSender },
             };
 
             let impl_quote = quote! {
@@ -92,6 +97,22 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                         )
 
                     }
+                    /// Request an xdg-activation token for the surface of window `id`.
+                    /// `on_token` turns the reply into a message; it receives `None`
+                    /// when the compositor does not support xdg-activation.
+                    fn request_activation_token(
+                        id: iced_layershell::reexport::IcedId,
+                        app_id: Option<String>,
+                        on_token: impl FnOnce(Option<String>) -> Self + Send + 'static,
+                    ) -> iced_layershell::reexport::Task<Self> {
+                        let (sender, receiver) = iced_layershell::actions::ActivationTokenSender::channel();
+                        iced_layershell::reexport::Task::batch([
+                            iced_layershell::reexport::Task::done(Self::ActivationTokenRequest { id, app_id, sender }),
+                            iced_layershell::reexport::Task::perform(receiver, move |token| {
+                                on_token(token.ok().flatten())
+                            }),
+                        ])
+                    }
                 }
                 impl #impl_gen TryInto<iced_layershell::actions::LayerShellCustomActionWithId> for #ident #ty_gen #where_gen {
                     type Error = Self;
@@ -120,6 +141,7 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                             Self::NewInputPanel {settings, id } => Ok(LayerShellCustomActionWithId::new(None, LayerShellCustomAction::NewInputPanel { settings, id })),
                             Self::RemoveWindow(id) => Ok(LayerShellCustomActionWithId::new(Some(id), LayerShellCustomAction::RemoveWindow)),
                             Self::ForgetLastOutput => Ok(LayerShellCustomActionWithId::new(None, LayerShellCustomAction::ForgetLastOutput)),
+                            Self::ActivationTokenRequest { id, app_id, sender } => Ok(LayerShellCustomActionWithId::new(Some(id), LayerShellCustomAction::ActivationTokenRequest { app_id, sender })),
                             _ => Err(self)
                         }
                     }
@@ -142,8 +164,30 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                 VirtualKeyboardPressed {
                     key: u32,
                 },
+                /// Request an xdg-activation token, to pass to a spawned client
+                /// through `XDG_ACTIVATION_TOKEN`. Prefer the generated
+                /// `request_activation_token` helper, which also wires up the
+                /// reply channel.
+                ActivationTokenRequest { app_id: Option<String>, sender: iced_layershell::actions::ActivationTokenSender },
             };
             let impl_quote = quote! {
+                impl #impl_gen #ident #ty_gen #where_gen {
+                    /// Request an xdg-activation token for the main surface.
+                    /// `on_token` turns the reply into a message; it receives `None`
+                    /// when the compositor does not support xdg-activation.
+                    fn request_activation_token(
+                        app_id: Option<String>,
+                        on_token: impl FnOnce(Option<String>) -> Self + Send + 'static,
+                    ) -> iced_layershell::reexport::Task<Self> {
+                        let (sender, receiver) = iced_layershell::actions::ActivationTokenSender::channel();
+                        iced_layershell::reexport::Task::batch([
+                            iced_layershell::reexport::Task::done(Self::ActivationTokenRequest { app_id, sender }),
+                            iced_layershell::reexport::Task::perform(receiver, move |token| {
+                                on_token(token.ok().flatten())
+                            }),
+                        ])
+                    }
+                }
                 impl #impl_gen TryInto<iced_layershell::actions::LayerShellCustomActionWithId> for #ident #ty_gen #where_gen {
                     type Error = Self;
 
@@ -164,6 +208,7 @@ pub fn to_layer_message(attr: TokenStream2, input: TokenStream2) -> manyhow::Res
                             Self::VirtualKeyboardPressed { key } => Ok(LayerShellCustomActionWithId::new(None, LayerShellCustomAction::VirtualKeyboardPressed {
                                 key
                             })),
+                            Self::ActivationTokenRequest { app_id, sender } => Ok(LayerShellCustomActionWithId::new(None, LayerShellCustomAction::ActivationTokenRequest { app_id, sender })),
                             _ => Err(self)
                         }
                     }

@@ -98,6 +98,12 @@ pub enum WindowEvent {
     Ime(layershellev::Ime),
     Refresh,
     Closed,
+    /// the compositor answered an activation-token request
+    /// (`xdg_activation_token_v1.done`)
+    ActivationTokenDone {
+        request: layershellev::ActivationTokenId,
+        token: String,
+    },
     ThemeChanged(iced_core::theme::Mode),
 }
 
@@ -198,6 +204,12 @@ impl From<&DispatchMessage> for WindowEvent {
                 }
             }
             DispatchMessage::Ime(ime) => WindowEvent::Ime(ime.clone()),
+            DispatchMessage::ActivationTokenDone { request, token } => {
+                WindowEvent::ActivationTokenDone {
+                    request: *request,
+                    token: token.clone(),
+                }
+            }
         }
     }
 }

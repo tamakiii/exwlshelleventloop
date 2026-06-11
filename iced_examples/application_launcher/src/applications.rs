@@ -25,8 +25,10 @@ pub struct App {
 }
 
 impl App {
-    pub async fn launch(&self) {
-        if let Err(err) = systemd::launch(&self.id, &self.cmds, &self.description).await {
+    pub async fn launch(&self, activation_token: Option<String>) {
+        if let Err(err) =
+            systemd::launch(&self.id, &self.cmds, &self.description, activation_token).await
+        {
             tracing::error!("{err}");
         };
     }
