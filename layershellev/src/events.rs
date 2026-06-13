@@ -210,6 +210,20 @@ pub enum XdgInfoChangedType {
     Description,
 }
 
+/// The id of an activation-token request made with
+/// [WindowState::request_activation_token], used to match the
+/// [DispatchMessage::ActivationTokenDone] reply to its request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ActivationTokenId(u64);
+
+static ACTIVATION_TOKEN_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+impl ActivationTokenId {
+    pub(crate) fn unique() -> ActivationTokenId {
+        ActivationTokenId(ACTIVATION_TOKEN_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+}
+
 /// Describes a scroll along one axis
 #[derive(Default, Debug, Clone, Copy, PartialEq)]
 pub struct AxisScroll {
@@ -337,6 +351,10 @@ pub(crate) enum DispatchMessageInner {
     },
     XdgInfoChanged(XdgInfoChangedType),
     Ime(Ime),
+    ActivationTokenDone {
+        request: ActivationTokenId,
+        token: String,
+    },
 }
 
 /// This tell the DispatchMessage by dispatch
@@ -434,6 +452,17 @@ pub enum DispatchMessage {
         scale_float: f64,
     },
     Ime(Ime),
+    /// the compositor answered an activation-token request made with
+    /// [WindowState::request_activation_token]
+    /// (`xdg_activation_token_v1.done`). Pass the token to a newly spawned
+    /// client in the `XDG_ACTIVATION_TOKEN` environment variable so the
+    /// compositor can hand it focus, or use it with
+    /// [WindowState::activate_with_token].
+    ActivationTokenDone {
+        /// the value returned by [WindowState::request_activation_token]
+        request: ActivationTokenId,
+        token: String,
+    },
     Closed,
 }
 
@@ -538,6 +567,9 @@ impl From<DispatchMessageInner> for DispatchMessage {
                 scale_float,
             },
             DispatchMessageInner::Ime(ime) => DispatchMessage::Ime(ime),
+            DispatchMessageInner::ActivationTokenDone { request, token } => {
+                DispatchMessage::ActivationTokenDone { request, token }
+            }
             DispatchMessageInner::XdgInfoChanged(_) => unimplemented!(),
         }
     }
