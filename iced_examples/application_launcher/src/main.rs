@@ -4,7 +4,9 @@ use applications::{App, all_apps};
 use iced::widget::operation::focus;
 use iced::widget::{column, scrollable, text_input};
 use iced::{Element, Event, Length, Task as Command, event};
-use iced_layershell::actions::LayerShellCustomActionWithId;
+use iced_layershell::actions::{
+    ActivationTokenSender, LayerShellCustomAction, LayerShellCustomActionWithId,
+};
 use iced_layershell::application;
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity};
 use iced_layershell::settings::{LayerShellSettings, Settings};
@@ -39,7 +41,16 @@ fn main() -> Result<(), iced_layershell::Error> {
 impl TryInto<LayerShellCustomActionWithId> for Message {
     type Error = Self;
     fn try_into(self) -> Result<LayerShellCustomActionWithId, Self::Error> {
-        Err(self)
+        match self {
+            Self::TokenRequest(sender) => Ok(LayerShellCustomActionWithId::new(
+                None,
+                LayerShellCustomAction::ActivationTokenRequest {
+                    app_id: None,
+                    sender,
+                },
+            )),
+            _ => Err(self),
+        }
     }
 }
 
@@ -54,6 +65,8 @@ enum Message {
     SearchEditChanged(String),
     SearchSubmit,
     Launch(usize),
+    TokenRequest(ActivationTokenSender),
+    LaunchWithToken { index: usize, token: Option<String> },
     IcedEvent(Event),
     LaunchDone,
 }
@@ -100,15 +113,8 @@ impl Launcher {
                     })
                     .enumerate()
                     .find(|(index, _)| *index == self.scrollpos);
-                if let Some((_, (_, app))) = index {
-                    let app = app.clone();
-                    Command::batch(vec![
-                        Command::future(async move {
-                            app.launch().await;
-                            Message::LaunchDone
-                        }),
-                        iced_runtime::task::effect(Action::Exit),
-                    ])
+                if let Some((_, (index, _))) = index {
+                    Command::done(Message::Launch(index))
                 } else {
                     Command::none()
                 }
@@ -119,10 +125,24 @@ impl Launcher {
                 Command::none()
             }
             Message::Launch(index) => {
+                // mint an xdg-activation token first, so the launched client
+                // can take focus; the launch itself happens once the token
+                // arrives in Message::LaunchWithToken
+                let (sender, receiver) = ActivationTokenSender::channel();
+                Command::batch(vec![
+                    Command::done(Message::TokenRequest(sender)),
+                    Command::perform(receiver, move |token| Message::LaunchWithToken {
+                        index,
+                        token: token.ok().flatten(),
+                    }),
+                ])
+            }
+            Message::TokenRequest(_) => unreachable!("handled by the layershell runtime"),
+            Message::LaunchWithToken { index, token } => {
                 let app = self.apps[index].clone();
                 Command::batch(vec![
                     Command::future(async move {
-                        app.launch().await;
+                        app.launch(token).await;
                         Message::LaunchDone
                     }),
                     iced_runtime::task::effect(Action::Exit),
