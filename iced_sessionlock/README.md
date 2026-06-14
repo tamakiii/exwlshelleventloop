@@ -73,6 +73,11 @@ impl Counter {
                 Command::none()
             }
             Message::UnLock => Command::done(message),
+            Message::Locked => {
+                // the compositor locked the session: safe to start
+                // authentication from here
+                Command::none()
+            }
         }
     }
 

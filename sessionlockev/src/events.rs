@@ -102,6 +102,8 @@ pub struct AxisScroll {
 #[derive(Debug, Clone)]
 pub(crate) enum DispatchMessageInner {
     NewDisplay(WlOutput),
+    Locked,
+    Finished,
     MouseButton {
         state: WEnum<ButtonState>,
         serial: u32,
@@ -267,6 +269,17 @@ pub enum DispatchMessage {
         scale_float: f64,
         scale_u32: u32,
     },
+    /// the compositor has activated the lock: every output is covered by a
+    /// lock surface and no normal content is visible anymore. This is the
+    /// point where it is safe to treat the session as locked, for example to
+    /// allow a following suspend.
+    Locked,
+    /// the compositor denied the lock (for example because another lock
+    /// client is already running) or revoked it. The lock object is
+    /// destroyed and the event loop stops right after this event is
+    /// delivered, following the protocol requirement that a client must
+    /// destroy the object after `finished`.
+    Finished,
     // because wlouput is dead, the window is closed
     Closed,
 }
@@ -373,6 +386,8 @@ impl From<DispatchMessageInner> for DispatchMessage {
             },
             DispatchMessageInner::UnFocused => DispatchMessage::Unfocus,
             DispatchMessageInner::Focused(id) => DispatchMessage::Focused(id),
+            DispatchMessageInner::Locked => DispatchMessage::Locked,
+            DispatchMessageInner::Finished => DispatchMessage::Finished,
         }
     }
 }

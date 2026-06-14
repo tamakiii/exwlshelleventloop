@@ -15,6 +15,21 @@ pub use iced_sessionlock_macros::to_session_message;
 
 pub use error::Error;
 
+/// Conversion used by the runtime to deliver session-lock lifecycle
+/// messages to the application. Use the [`to_session_message`] macro to
+/// implement it together with `TryInto<UnLockAction>`.
+pub trait FromLockedInfo {
+    fn get(info: LockedInfo) -> Self;
+}
+
+/// Payload of the message the runtime delivers once the compositor has
+/// activated the lock (the `ext_session_lock_v1.locked` event): every output
+/// is covered by a lock surface and no unlocked content is visible anymore.
+/// This is the point where a locker can safely start authentication or
+/// report readiness (for example for lock-before-suspend ordering).
+#[derive(Debug, Clone, Copy)]
+pub struct LockedInfo;
+
 use iced_core::theme::Base as DefaultStyle;
 use iced_core::theme::Style as Appearance;
 

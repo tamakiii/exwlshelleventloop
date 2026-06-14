@@ -2,6 +2,7 @@ use iced::widget::{Space, button, column, text, text_input};
 use iced::{Alignment, Element, Event, Length, Task as Command, event};
 use iced_sessionlock::actions::UnLockAction;
 use iced_sessionlock::application;
+use iced_sessionlock::{FromLockedInfo, LockedInfo};
 
 pub fn main() -> Result<(), iced_sessionlock::Error> {
     application(Counter::new, Counter::update, Counter::view)
@@ -21,6 +22,7 @@ enum Message {
     TextInput(String),
     IcedEvent(Event),
     UnLock,
+    Locked,
 }
 
 impl TryInto<UnLockAction> for Message {
@@ -30,6 +32,12 @@ impl TryInto<UnLockAction> for Message {
             return Ok(UnLockAction);
         }
         Err(self)
+    }
+}
+
+impl FromLockedInfo for Message {
+    fn get(_info: LockedInfo) -> Self {
+        Self::Locked
     }
 }
 
@@ -61,6 +69,10 @@ impl Counter {
             }
             Message::TextInput(text) => {
                 self.text = text;
+                Command::none()
+            }
+            Message::Locked => {
+                self.text = "locked".to_string();
                 Command::none()
             }
             _ => unreachable!(),

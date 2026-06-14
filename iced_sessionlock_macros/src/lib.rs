@@ -23,6 +23,8 @@ pub fn to_session_message(
     let variants = data.take_enum().unwrap();
 
     let unlock_action: Path = syn::parse_quote!(iced_sessionlock::actions::UnLockAction);
+    let locked_info: Path = syn::parse_quote!(iced_sessionlock::LockedInfo);
+    let from_locked_info: Path = syn::parse_quote!(iced_sessionlock::FromLockedInfo);
 
     let try_into = quote! {
         impl #impl_gen TryInto<#unlock_action> for #ident #ty_gen #where_gen {
@@ -35,13 +37,22 @@ pub fn to_session_message(
                 }
             }
         }
+
+        impl #impl_gen #from_locked_info for #ident #ty_gen #where_gen {
+            fn get(_info: #locked_info) -> Self {
+                Self::Locked
+            }
+        }
     };
 
     Ok(quote! {
         #(#attrs)*
         #vis enum #ident #ty_gen #where_gen {
             #(#variants,)*
-            UnLock
+            UnLock,
+            /// Delivered by the runtime once the compositor has activated the
+            /// lock (the `ext_session_lock_v1.locked` event)
+            Locked
         }
 
         #try_into

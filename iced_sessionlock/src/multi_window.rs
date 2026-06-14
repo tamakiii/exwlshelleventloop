@@ -1,7 +1,7 @@
 mod state;
 use crate::{
-    actions::UnLockAction, event::WindowEvent, multi_window::window_manager::WindowManager,
-    user_interface::UserInterfaces,
+    FromLockedInfo, LockedInfo, actions::UnLockAction, event::WindowEvent,
+    multi_window::window_manager::WindowManager, user_interface::UserInterfaces,
 };
 use std::{
     borrow::Cow,
@@ -53,7 +53,7 @@ pub fn run<P>(
 where
     P: Program + 'static,
     P::Theme: DefaultStyle,
-    P::Message: 'static + TryInto<UnLockAction, Error = P::Message>,
+    P::Message: 'static + TryInto<UnLockAction, Error = P::Message> + FromLockedInfo,
 {
     use futures::task;
     use sessionlockev::calloop::channel::channel;
@@ -141,12 +141,20 @@ where
     let mut context_state = ContextState::Context(context);
     boot_span.finish();
     let mut waiting_session_lock_events = VecDeque::new();
+    // Set when the compositor answers the lock request with `finished`:
+    // sessionlockev destroys the lock object and stops the event loop, and
+    // run() reports the failure to the application through an error.
+    let lock_finished = std::rc::Rc::new(std::cell::Cell::new(false));
+    let lock_finished_flag = lock_finished.clone();
     ev.running_with_proxy(message_receiver, move |event, ev, id| {
         match event {
             SessionLockEvent::InitRequest => {}
             // TODO: maybe use it later
             SessionLockEvent::BindProvide(_, _) => {}
             SessionLockEvent::RequestMessages(message) => {
+                if let sessionlockev::DispatchMessage::Finished = message {
+                    lock_finished_flag.set(true);
+                }
                 waiting_session_lock_events
                     .push_back((id, IcedSessionLockEvent::Window(WindowEvent::from(message))));
             }
@@ -198,6 +206,9 @@ where
         }
         ReturnData::None
     })?;
+    if lock_finished.get() {
+        return Err(Error::LockFinished);
+    }
     Ok(())
 }
 
@@ -235,7 +246,7 @@ where
     C: Compositor<Renderer = P::Renderer> + 'static,
     E: Executor + 'static,
     P::Theme: DefaultStyle,
-    P::Message: 'static + TryInto<UnLockAction, Error = P::Message>,
+    P::Message: 'static + TryInto<UnLockAction, Error = P::Message> + FromLockedInfo,
 {
     pub fn new(
         application: Instance<P>,
@@ -326,6 +337,12 @@ where
             IcedSessionLockEvent::Window(WindowEvent::Closed) => {
                 self.handle_closed_event(session_lock_id)
             }
+            IcedSessionLockEvent::Window(WindowEvent::Locked) => {
+                self.messages.push(P::Message::get(LockedInfo));
+            }
+            // run() reports `finished` to the application as
+            // Error::LockFinished once the event loop has stopped.
+            IcedSessionLockEvent::Window(WindowEvent::Finished) => {}
             IcedSessionLockEvent::Window(window_event) => {
                 self.handle_window_event(session_lock_id, window_event)
             }

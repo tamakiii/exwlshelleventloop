@@ -46,6 +46,15 @@ fn main() {
                 println!("{width}, {height}, {scale_float}");
                 ReturnData::None
             }
+            SessionLockEvent::RequestMessages(DispatchMessage::Locked) => {
+                println!("the compositor locked the session");
+                ReturnData::None
+            }
+            SessionLockEvent::RequestMessages(DispatchMessage::Finished) => {
+                eprintln!("failed to lock the session, is another lock screen running?");
+                // the event loop stops by itself after `finished`
+                ReturnData::None
+            }
             SessionLockEvent::RequestMessages(DispatchMessage::MouseButton { .. }) => {
                 ReturnData::None
             }
