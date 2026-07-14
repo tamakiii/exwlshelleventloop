@@ -411,6 +411,13 @@ impl Shell {
     }
 }
 
+/// How long a [`PresentAvailableState::Requested`] slot may wait for the
+/// compositor's frame callback before a pending redraw is presented anyway.
+/// One 60 Hz frame plus headroom: on a busy compositor the real callback
+/// beats this budget and throttling is unchanged; on a quiet one it bounds
+/// the wait that used to be infinite (tamakiii/meta#1820).
+const PRESENT_FALLBACK: Duration = Duration::from_millis(20);
+
 /// The state of if we can call a `present` for the window.
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 enum PresentAvailableState {
@@ -458,6 +465,7 @@ impl<T> WindowStateUnitBuilder<T> {
                 scale: 120,
                 request_flag: Default::default(),
                 present_available_state: Default::default(),
+                present_requested_at: Default::default(),
             },
         }
     }
@@ -550,6 +558,9 @@ pub struct WindowStateUnit<T> {
     scale: u32,
     request_flag: WindowStateUnitRequestFlag,
     present_available_state: PresentAvailableState,
+    /// When the present slot last moved to [`PresentAvailableState::Requested`]
+    /// — the anchor for [`PRESENT_FALLBACK`] (see [`Self::present_slot_stale`]).
+    present_requested_at: Option<Instant>,
 }
 
 impl<T> WindowStateUnit<T> {
@@ -782,10 +793,40 @@ impl<T> WindowStateUnit<T> {
         }
     }
 
-    /// Returns the duration until this unit needs its next refresh,
-    /// or `None` if no refresh is pending, the surface has not received
-    /// its initial configure, or the present slot is unavailable (waiting
-    /// for a compositor frame callback).
+    /// The present slot is `Requested` but the compositor's frame callback has
+    /// outlived the throttle budget. A `wl_surface.frame` callback is a "good
+    /// time to draw" THROTTLING hint — compositors service it during their own
+    /// repaint cycle, and a quiet output may not repaint for minutes. Treating
+    /// it as a hard permission parked the loop in epoll(-1) with a pending
+    /// redraw: update()+view() ran on the next input, but the present was
+    /// refused and the screen kept the stale frame until some unrelated flip
+    /// serviced the callback (the nemu launcher/panel freeze,
+    /// tamakiii/meta#1820). A stale `Requested` therefore counts as available;
+    /// on a busy compositor the real callback always arrives first and the
+    /// throttle keeps working as designed.
+    fn present_slot_stale(&self) -> bool {
+        self.present_available_state == PresentAvailableState::Requested
+            && self
+                .present_requested_at
+                .is_none_or(|at| at.elapsed() >= PRESENT_FALLBACK)
+    }
+
+    /// Time left until [`Self::present_slot_stale`] flips, zero if it already
+    /// has — the bounded wait `refresh_timeout` hands the event loop in place
+    /// of the old indefinite `None`.
+    fn present_fallback_remaining(&self) -> Duration {
+        self.present_requested_at.map_or(Duration::ZERO, |at| {
+            PRESENT_FALLBACK.saturating_sub(at.elapsed())
+        })
+    }
+
+    /// Returns the duration until this unit needs its next refresh, or `None`
+    /// if no refresh is pending or the surface has not received its initial
+    /// configure. A pending refresh whose present slot is still waiting on the
+    /// compositor's frame callback yields a BOUNDED wait (the remaining
+    /// [`PRESENT_FALLBACK`] budget), never an indefinite `None` — see
+    /// [`Self::present_slot_stale`] for why an unserviced callback must not
+    /// park the loop.
     fn refresh_timeout(&self) -> Option<Duration> {
         if !self.configured {
             return None;
@@ -796,7 +837,7 @@ impl<T> WindowStateUnit<T> {
                 if self.present_available_state == PresentAvailableState::Available {
                     Some(Duration::ZERO)
                 } else {
-                    None
+                    Some(self.present_fallback_remaining())
                 }
             }
             RefreshRequest::At(instant) => {
@@ -804,7 +845,7 @@ impl<T> WindowStateUnit<T> {
                 if timeout.is_zero()
                     && self.present_available_state != PresentAvailableState::Available
                 {
-                    None
+                    Some(self.present_fallback_remaining())
                 } else {
                     Some(timeout)
                 }
@@ -817,7 +858,9 @@ impl<T> WindowStateUnit<T> {
         if !self.configured || !self.should_refresh() {
             return false;
         }
-        if self.present_available_state != PresentAvailableState::Available {
+        if self.present_available_state != PresentAvailableState::Available
+            && !self.present_slot_stale()
+        {
             return false;
         }
         self.request_flag.refresh = RefreshRequest::Wait;
@@ -840,6 +883,7 @@ impl<T: 'static> WindowStateUnit<T> {
         match self.present_available_state {
             PresentAvailableState::Taken => {
                 self.present_available_state = PresentAvailableState::Requested;
+                self.present_requested_at = Some(Instant::now());
                 self.wl_surface
                     .frame(&self.qh, (self.id, PresentAvailableState::Available));
             }

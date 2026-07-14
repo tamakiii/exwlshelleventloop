@@ -603,6 +603,20 @@ where
                 compositor::SurfaceError::OutOfMemory => {
                     panic!("{error:?}");
                 }
+                compositor::SurfaceError::Outdated | compositor::SurfaceError::Lost => {
+                    // The swapchain no longer matches the wl_surface (a late
+                    // configure/scale, or the backend dropped it). Upstream
+                    // iced reconfigures and redraws; silently dropping the
+                    // frame here left the surface PERMANENTLY stale — every
+                    // later present hit the same error while update()/view()
+                    // kept running, so the app was alive but invisible
+                    // (tamakiii/meta#1820). Invalidate the cached dimensions
+                    // (forcing configure_surface on the next pass) and queue
+                    // that pass now.
+                    tracing::warn!("presenting failed ({error:?}); reconfiguring the surface");
+                    self.cached_layer_dimensions.remove(&iced_id);
+                    ev.request_refresh(layer_shell_id, RefreshRequest::NextFrame);
+                }
                 _ => {
                     tracing::error!("Error {error:?} when presenting surface.");
                 }
